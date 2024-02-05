@@ -1,3 +1,2 @@
-Pending items
-- Support for API version below 30 for reading images
-- InfoView bottomsheet closing bug
+Notes
+- Reads camera folder images currently for testing for below API 29. Should be changed to the correct folder
