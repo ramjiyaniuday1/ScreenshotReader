@@ -1,4 +1,4 @@
-package com.alle.imagereader.domain.models
+package com.alle.imagereader.domain.repo
 
 import com.alle.imagereader.data.db.models.Screenshot
 import kotlinx.coroutines.flow.Flow

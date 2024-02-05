@@ -1,7 +1,8 @@
-package com.alle.imagereader.data.db
+package com.alle.imagereader.data.repo
 
+import com.alle.imagereader.data.db.ScreenshotDao
 import com.alle.imagereader.data.db.models.Screenshot
-import com.alle.imagereader.domain.models.ScreenshotRepo
+import com.alle.imagereader.domain.repo.ScreenshotRepo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import javax.inject.Inject

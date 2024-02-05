@@ -2,7 +2,6 @@ package com.alle.imagereader.di
 
 import android.content.Context
 import androidx.room.Room
-import androidx.room.RoomDatabase
 import com.alle.imagereader.data.db.AppDatabase
 import com.alle.imagereader.data.db.CollectionDao
 import com.alle.imagereader.data.db.ScreenshotDao

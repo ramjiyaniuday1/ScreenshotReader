@@ -1,24 +1,34 @@
 package com.alle.imagereader.ui.viewmodel
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.app.RecoverableSecurityException
+import android.content.ContentResolver
+import android.content.ContentUris
+import android.content.IntentSender
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.IntentSenderRequest
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.alle.imagereader.data.db.models.Screenshot
-import com.alle.imagereader.domain.models.ScreenshotRepo
+import com.alle.imagereader.domain.repo.ScreenshotRepo
+import com.alle.imagereader.ui.utils.ImageUtils
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Collections
 import javax.inject.Inject
 
 
@@ -49,14 +59,21 @@ class MainActivityViewModel @Inject constructor(
     private val _selectedScreenshot: MutableStateFlow<Screenshot?> = MutableStateFlow(null)
     val selectedScreenshot by lazy { _selectedScreenshot.asStateFlow() }
 
+    private var _selectedIndex = MutableStateFlow(0)
+    val selectedIndex = _selectedIndex.asStateFlow()
+
+    private val _permissionNeededForDelete = MutableStateFlow<IntentSender?>(null)
+    val permissionNeededForDelete = _permissionNeededForDelete.asStateFlow()
+
     fun setViewState(viewState: ViewState) {
         _loadingState.value = viewState
     }
 
-    fun setScreenshot(screenshot: Screenshot) {
+    fun setScreenshot(screenshot: Screenshot, index: Int) {
         viewModelScope.launch {
             screenshotRepo.findByUri(screenshot.fileUri)
                 .flowOn(Dispatchers.IO).collectLatest {
+                    _selectedIndex.value = index
                     if (it!=null) {
                         _selectedScreenshot.value = it
                     } else {
@@ -83,12 +100,12 @@ class MainActivityViewModel @Inject constructor(
         }
         viewModelScope.launch {
             screenshotRepo.findByUri(image.fileUri)
-                .flowOn(Dispatchers.IO).collectLatest {screenshot ->
+                .flowOn(Dispatchers.IO).collectLatest { screenshot ->
                     Log.d(TAG, "showInfoView: ${screenshot.toString()}")
                     if (screenshot == null) {
-                        convertCompressedByteArrayToBitmap(File(image.fileUri).readBytes())?.let {
+                        ImageUtils.convertCompressedByteArrayToBitmap(File(image.fileUri).readBytes())?.let {
                             val inputImage = InputImage.fromBitmap(it, 0)
-                            runObjectDetection(inputImage, image)
+                            runTextDetection(inputImage, image)
                         }
                     } else {
                         _selectedScreenshot.value = screenshot
@@ -112,8 +129,160 @@ class MainActivityViewModel @Inject constructor(
         _showInfoView.value = InfoViewState.Hide
     }
 
+    fun getImages(contentResolver: ContentResolver): MutableList<Screenshot> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            getImagesApi29(contentResolver)
+        } else {
+            getImagesLegacy()
+        }
+    }
 
-    private fun runObjectDetection(inputImage: InputImage, image: Screenshot) {
+    private fun getImagesLegacy(): MutableList<Screenshot> {
+        val imgList: MutableList<Screenshot> = ArrayList()
+        // val filePath = "/storage/emulated/0/DCIM/Camera"
+        val rootPath: String = Environment.getExternalStorageDirectory().absolutePath
+        val folderPath = "DCIM/Camera"
+
+        val parentFile = File(rootPath + File.separator + folderPath)
+        val files = parentFile.listFiles()
+        if (files != null) {
+            for (file in files) {
+                if (file.path.endsWith(".png") || file.path.endsWith(".jpg")) {
+                    Screenshot(fileUri = file.path,
+                        name = file.name, fileId = 0).apply {
+                        imgList.add(this)
+                    }
+                }
+            }
+        }
+        return imgList
+    }
+
+    private fun getImagesApi29(contentResolver: ContentResolver): MutableList<Screenshot> {
+
+        val TAG = "IMAGES"
+        val collection =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                MediaStore.Images.Media.getContentUri(
+                    MediaStore.VOLUME_EXTERNAL
+                )
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.DATA
+        )
+
+        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} ASC"
+
+        val imgList: MutableList<Screenshot> = ArrayList()
+
+        contentResolver.query(
+            collection,
+            projection,
+            null,
+            null,
+            sortOrder
+        )?.let { cursor ->
+            val count: Int = cursor.getCount()
+            Log.d(TAG, "getImagePath: $count")
+            for (i in 0 until count-1) {
+
+                cursor.moveToPosition(i)
+                val dataColumnIndex: Int = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
+                val nameColumnIndex: Int = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                val id: Int = cursor.getColumnIndex(MediaStore.Images.Media._ID)
+
+                Screenshot(fileUri = cursor.getString(dataColumnIndex),
+                    name = cursor.getString(nameColumnIndex), fileId = cursor.getLong(id)).apply {
+                    imgList.add(this)
+                }
+
+            }
+            cursor.close()
+        }
+        return imgList
+    }
+
+    fun deleteScreenshot(
+        resolver: ContentResolver,
+        deleteResultLauncher: ActivityResultLauncher<IntentSenderRequest>?,
+        deletePendingImageLauncher: ActivityResultLauncher<IntentSenderRequest>?
+    ) {
+
+        selectedScreenshot.value?.let { screenshot ->
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val uriList: MutableList<Uri> = ArrayList()
+                val uri = ContentUris.withAppendedId(
+                    MediaStore.Images.Media.getContentUri("external"),
+                    screenshot.fileId
+                )
+
+                Collections.addAll(uriList, uri)
+                val pendingIntent =
+                    MediaStore.createDeleteRequest(resolver, uriList)
+                try {
+                    val intentSenderRequest =
+                        IntentSenderRequest.Builder(pendingIntent.intentSender).build()
+                    deleteResultLauncher?.launch(intentSenderRequest)
+
+                } catch (e: Exception) {
+                    Log.d("DELETE_IMAGE", "deleteScreenshot: $e")
+                }
+            } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                try {
+                    val uri = ContentUris.withAppendedId(
+                        MediaStore.Images.Media.getContentUri("external"),
+                        screenshot.fileId
+                    )
+                    resolver.delete(
+                        uri,
+                        "${MediaStore.Images.Media._ID} = ?",
+                        arrayOf(screenshot.fileId.toString())
+                    )
+                    removeImageFromList()
+                } catch (securityException: SecurityException) {
+                    val recoverableSecurityException =
+                        securityException as? RecoverableSecurityException
+                            ?: throw securityException
+
+                    val intentSenderRequest =
+                        IntentSenderRequest.Builder(recoverableSecurityException.userAction.actionIntent.intentSender)
+                            .build()
+                    deletePendingImageLauncher?.launch(intentSenderRequest)
+                }
+            } else {
+                getImageDeleteUri(contentResolver = resolver, screenshot.fileUri)?.let {
+                    resolver.delete(it, null, null)
+                    removeImageFromList()
+                }
+            }
+        }
+    }
+
+    private fun getImageDeleteUri(contentResolver: ContentResolver, path: String): Uri? {
+        val cursor = contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Images.Media._ID),
+            MediaStore.Images.Media.DATA + " = ?",
+            arrayOf(path),
+            null
+        )
+        val uri = if (cursor != null && cursor.moveToFirst())
+            ContentUris.withAppendedId(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
+            ) else null
+        cursor?.close()
+        return uri
+    }
+
+    private fun runTextDetection(inputImage: InputImage, image: Screenshot) {
 
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
@@ -149,24 +318,8 @@ class MainActivityViewModel @Inject constructor(
                 }
             }
             .addOnFailureListener { e ->
-
+                Log.d(TAG, "runObjectDetection: $e")
             }
-        
-       /* val labeler = ImageLabeling.getClient(ImageLabelerOptions.DEFAULT_OPTIONS)
-        labeler.process(image)
-            .addOnSuccessListener { labels ->
-                // Task completed successfully
-                for (label in labels) {
-                    val text = label.text
-                    val confidence = label.confidence
-                    val index = label.index
-                    Log.d(TAG, "runObjectDetection: label: $text, confidence:$confidence, index: $index")
-                }
-            }
-            .addOnFailureListener { e ->
-                // Task failed with an exception
-                // ...
-            }*/
 
     }
 
@@ -204,11 +357,13 @@ class MainActivityViewModel @Inject constructor(
     fun removeImageFromList() {
         (loadingState.value as? ViewState.Loaded)?.imageList?.toMutableList()?.let {
             it.remove(selectedScreenshot.value)
+            _loadingState.update { state->
+                ViewState.Loaded(it)
+            }
+            if (selectedIndex.value < it.size && selectedIndex.value > 0) {
+                _selectedScreenshot.value = it[selectedIndex.value]
+            }
         }
-    }
-
-    private fun convertCompressedByteArrayToBitmap(src: ByteArray): Bitmap? {
-        return BitmapFactory.decodeByteArray(src, 0, src.size)
     }
 
 }

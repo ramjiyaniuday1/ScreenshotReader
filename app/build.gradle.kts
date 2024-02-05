@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.alle.imagereader"
-        minSdk = 24
+        minSdk = 21
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -71,18 +71,9 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.44")
     kapt("com.google.dagger:hilt-android-compiler:2.44")
 
-    /* MLKit */
-    //implementation("com.google.mlkit:object-detection:16.2.4")
-  /*  implementation("com.google.mlkit:image-labeling:17.0.7")
-    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")*/
-
     implementation("com.google.mlkit:text-recognition:16.0.0")
     // To recognize Latin script
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
-
-
-    /* Adaptive file picker */
-    implementation("com.mohamedrejeb.calf:calf-file-picker:0.3.1")
 
     /* Room */
     val roomVersion = "2.6.1"
